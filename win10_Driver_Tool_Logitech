@@ -1,0 +1,257 @@
+import tkinter as tk
+from tkinter import filedialog, scrolledtext, messagebox
+import os
+import shutil
+import threading
+import subprocess
+import ctypes
+import sys
+
+
+DRIVERSTORE = r"C:\Windows\System32\DriverStore\FileRepository"
+
+
+def is_admin():
+    """检查是否以管理员权限运行"""
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin()
+    except:
+        return False
+
+
+def run_as_admin():
+    """重新以管理员身份启动当前脚本"""
+    ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, " ".join(sys.argv), None, 1
+    )
+
+
+class LogitechDriverTool:
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Logitech 驱动备份工具——使用管理员权限运行")
+        self.root.geometry("800x560")  # 稍微加高以容纳新按钮
+
+        self.export_dir = ""
+        self.restore_dir = ""  # 用于恢复的备份目录
+
+        # === 备份目录选择 ===
+        top1 = tk.Frame(root)
+        top1.pack(pady=5)
+        tk.Label(top1, text="驱动备份目录_用于备份驱动:").pack(side=tk.LEFT)
+        self.path_entry = tk.Entry(top1, width=65)
+        self.path_entry.pack(side=tk.LEFT, padx=5)
+        tk.Button(top1, text="选择", command=self.select_backup_folder).pack(side=tk.LEFT)
+
+        # === 恢复目录选择 ===
+        top2 = tk.Frame(root)
+        top2.pack(pady=5)
+        tk.Label(top2, text="恢复时读取驱动的文件夹:").pack(side=tk.LEFT)
+        self.restore_entry = tk.Entry(top2, width=65)
+        self.restore_entry.pack(side=tk.LEFT, padx=5)
+        tk.Button(top2, text="选择", command=self.select_restore_folder).pack(side=tk.LEFT)
+
+        # === 操作按钮 ===
+        btn = tk.Frame(root)
+        btn.pack(pady=10)
+        tk.Button(btn, text="扫描 Logitech 驱动", width=20, command=self.scan).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn, text="备份驱动", width=20, command=self.backup).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn, text="恢复驱动", width=20, command=self.restore).pack(side=tk.LEFT, padx=5)
+
+        # === 日志窗口 ===
+        self.log = scrolledtext.ScrolledText(root, height=22)
+        self.log.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.found_drivers = []
+
+    def log_write(self, text):
+        self.log.insert(tk.END, text + "\n")
+        self.log.see(tk.END)
+        self.log.update_idletasks()
+
+    def select_backup_folder(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.export_dir = path
+            self.path_entry.delete(0, tk.END)
+            self.path_entry.insert(0, path)
+
+    def select_restore_folder(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.restore_dir = path
+            self.restore_entry.delete(0, tk.END)
+            self.restore_entry.insert(0, path)
+
+    def scan(self):
+        def task():
+            try:
+                if not os.path.exists(DRIVERSTORE):
+                    self.log_write("❌ DriverStore 路径不存在！")
+                    return
+
+                try:
+                    all_folders = os.listdir(DRIVERSTORE)
+                except PermissionError:
+                    self.log_write("❌ 无权限访问 DriverStore。请以管理员身份运行！")
+                    return
+                except Exception as e:
+                    self.log_write(f"❌ 访问 DriverStore 出错: {e}")
+                    return
+
+                self.log_write(f"正在扫描 DriverStore（共 {len(all_folders)} 个驱动包）...")
+                self.found_drivers.clear()
+
+                for folder in all_folders:
+                    fpath = os.path.join(DRIVERSTORE, folder)
+                    if not os.path.isdir(fpath):
+                        continue
+
+                    inf_files = [f for f in os.listdir(fpath) if f.lower().endswith('.inf')]
+                    if not inf_files:
+                        continue
+
+                    is_logitech = False
+                    for inf_name in inf_files:
+                        inf_path = os.path.join(fpath, inf_name)
+                        try:
+                            encodings = ['utf-8', 'gbk', 'latin1']
+                            content = None
+                            for enc in encodings:
+                                try:
+                                    with open(inf_path, 'r', encoding=enc) as f:
+                                        content = f.read()
+                                    break
+                                except UnicodeDecodeError:
+                                    continue
+                            if content is None:
+                                continue
+
+                            content_lower = content.lower()
+                            if 'logitech' in content_lower or 'vid_046d' in content_lower:
+                                is_logitech = True
+                                break
+                        except Exception as e:
+                            self.log_write(f"⚠️ 读取 {inf_path} 时出错: {e}")
+                            continue
+
+                    if is_logitech:
+                        self.found_drivers.append(fpath)
+                        self.log_write("✅ 发现 Logitech 驱动: " + folder)
+
+                if not self.found_drivers:
+                    self.log_write("未找到 Logitech 相关驱动（请确认设备已安装驱动）")
+                else:
+                    self.log_write(f"✅ 共找到 {len(self.found_drivers)} 个 Logitech 驱动包")
+
+            except Exception as e:
+                self.log_write(f"❌ 扫描过程中发生未知错误: {e}")
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def backup(self):
+        def task():
+            if not self.export_dir:
+                self.log_write("❌ 请先选择备份目录！")
+                return
+
+            if not self.found_drivers:
+                self.log_write("❌ 没有可备份的驱动，请先扫描。")
+                return
+
+            target = os.path.join(self.export_dir, "LogitechDrivers")
+            os.makedirs(target, exist_ok=True)
+
+            success_count = 0
+            for d in self.found_drivers:
+                name = os.path.basename(d)
+                dst = os.path.join(target, name)
+
+                try:
+                    self.log_write(f"📁 复制: {name}")
+                    shutil.copytree(d, dst, dirs_exist_ok=True)
+                    success_count += 1
+                except Exception as e:
+                    self.log_write(f"❌ 复制失败 {name}: {e}")
+
+            self.log_write(f"✅ 备份完成！成功备份 {success_count}/{len(self.found_drivers)} 个驱动包。")
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def restore(self):
+        def task():
+            if not self.restore_dir:
+                self.log_write("❌ 请先选择恢复目录（应包含 Logitech 驱动子文件夹）！")
+                return
+
+            # 检查是否以管理员运行
+            if not is_admin():
+                self.log_write("⚠️ 恢复驱动需要管理员权限，正在尝试提权...")
+                try:
+                    run_as_admin()
+                    self.root.quit()  # 退出当前非管理员实例
+                    return
+                except Exception as e:
+                    self.log_write("❌ 无法提权，请手动以管理员身份运行本程序！")
+                    return
+
+            # 查找所有 .inf 文件（递归一级子目录）
+            driver_packages = []
+            try:
+                for item in os.listdir(self.restore_dir):
+                    item_path = os.path.join(self.restore_dir, item)
+                    if os.path.isdir(item_path):
+                        inf_files = [f for f in os.listdir(item_path) if f.lower().endswith('.inf')]
+                        for inf in inf_files:
+                            driver_packages.append(os.path.join(item_path, inf))
+            except Exception as e:
+                self.log_write(f"❌ 读取恢复目录失败: {e}")
+                return
+
+            if not driver_packages:
+                self.log_write("❌ 恢复目录中未找到任何 .inf 驱动文件！")
+                return
+
+            self.log_write(f"🔍 找到 {len(driver_packages)} 个驱动包，开始恢复...")
+
+            success = 0
+            for inf_path in driver_packages:
+                self.log_write(f"🔧 正在恢复: {os.path.basename(inf_path)}")
+                try:
+                    # 调用 pnputil /add-driver "xxx.inf" /install
+                    result = subprocess.run(
+                        ["pnputil", "/add-driver", inf_path, "/install"],
+                        capture_output=True,
+                        text=True,
+                        shell=True
+                    )
+                    if result.returncode == 0:
+                        self.log_write(f"✅ 成功恢复: {os.path.basename(inf_path)}")
+                        success += 1
+                    else:
+                        # 某些驱动可能已存在，返回“已存在”也算成功
+                        err_out = result.stderr.lower()
+                        if "already exists" in err_out or "已存在" in err_out:
+                            self.log_write(f"ℹ️ 驱动已存在（跳过）: {os.path.basename(inf_path)}")
+                            success += 1
+                        else:
+                            self.log_write(f"❌ 恢复失败: {result.stderr.strip()}")
+                except Exception as e:
+                    self.log_write(f"❌ 执行 pnputil 时出错: {e}")
+
+            self.log_write(f"🎉 恢复完成！成功 {success}/{len(driver_packages)} 个驱动。")
+            self.log_write("💡 请插入 Logitech 设备，系统将自动应用驱动。")
+
+        threading.Thread(target=task, daemon=True).start()
+
+
+if __name__ == "__main__":
+    # 启动前检查管理员权限（仅对恢复功能必要，但建议全程提权）
+    if not is_admin():
+        # 不强制提权，但恢复时会自动尝试
+        pass
+
+    root = tk.Tk()
+    app = LogitechDriverTool(root)
+    root.mainloop()
