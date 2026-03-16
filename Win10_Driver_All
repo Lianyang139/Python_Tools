@@ -1,0 +1,103 @@
+# win10全部驱动提取工具
+import os
+import subprocess
+import tkinter as tk
+from tkinter import filedialog, scrolledtext, messagebox
+import threading
+
+
+class DriverTool:
+
+    def __init__(self, root):
+
+        self.root = root
+        self.root.title("Windows 驱动备份工具")
+        self.root.geometry("600x400")
+
+        frame = tk.Frame(root)
+        frame.pack(pady=10)
+
+        self.path_entry = tk.Entry(frame, width=50)
+        self.path_entry.pack(side=tk.LEFT, padx=5)
+
+        browse_btn = tk.Button(frame, text="选择目录", command=self.select_folder)
+        browse_btn.pack(side=tk.LEFT)
+
+        btn_frame = tk.Frame(root)
+        btn_frame.pack(pady=10)
+
+        export_btn = tk.Button(btn_frame, text="导出驱动", width=15, command=self.export_drivers)
+        export_btn.pack(side=tk.LEFT, padx=10)
+
+        restore_btn = tk.Button(btn_frame, text="恢复驱动", width=15, command=self.restore_drivers)
+        restore_btn.pack(side=tk.LEFT, padx=10)
+
+        self.log = scrolledtext.ScrolledText(root, height=15)
+        self.log.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    def log_write(self, text):
+        self.log.insert(tk.END, text + "\n")
+        self.log.see(tk.END)
+
+    def select_folder(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.path_entry.delete(0, tk.END)
+            self.path_entry.insert(0, path)
+
+    def run_cmd(self, cmd):
+
+        self.log_write("执行: " + cmd)
+
+        process = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+
+        for line in process.stdout:
+            self.log_write(line.strip())
+
+        process.wait()
+
+        if process.returncode == 0:
+            self.log_write("完成\n")
+        else:
+            self.log_write("执行失败\n")
+
+    def export_drivers(self):
+
+        path = self.path_entry.get()
+
+        if not path:
+            messagebox.showerror("错误", "请选择导出目录")
+            return
+
+        cmd = f'dism /online /export-driver /destination:"{path}"'
+
+        threading.Thread(target=self.run_cmd, args=(cmd,)).start()
+
+    def restore_drivers(self):
+
+        path = self.path_entry.get()
+
+        if not path:
+            messagebox.showerror("错误", "请选择驱动目录")
+            return
+
+        cmd = f'pnputil /add-driver "{path}\\*.inf" /subdirs /install'
+
+        threading.Thread(target=self.run_cmd, args=(cmd,)).start()
+
+
+def main():
+
+    root = tk.Tk()
+    app = DriverTool(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
